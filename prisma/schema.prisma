@@ -1,0 +1,57 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  DEAD
+}
+
+model Job {
+  id                   String       @id @default(cuid())
+  name                 String
+  cronExpression       String
+  callbackUrl          String
+  timezone             String       @default("UTC")
+  maxRetries           Int          @default(3)
+  backoffMs            Int          @default(1000)
+  callbackTimeoutMs    Int          @default(30000)
+  enabled              Boolean      @default(true)
+  paused               Boolean      @default(false)
+  consecutiveDeadCount Int          @default(0)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  executions           Execution[]
+}
+
+model Execution {
+  id            String           @id @default(cuid())
+  jobId         String
+  job           Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  triggeredAt   DateTime         @default(now())
+  // The exact cron fire-time slot this execution belongs to. Scheduled fires set this;
+  // manual triggers leave it null. The unique constraint below makes it physically
+  // impossible to create two scheduled executions for the same (job, fire-slot) — this is
+  // the correctness guarantee against double-firing, independent of lock timing or node count.
+  scheduledFor  DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  status        ExecutionStatus  @default(PENDING)
+  attemptNumber Int              @default(1)
+  responseCode  Int?
+  durationMs    Int?
+  errorMessage  String?
+  triggerSource String           @default("schedule")
+
+  @@unique([jobId, scheduledFor])
+  @@index([jobId, triggeredAt])
+  @@index([jobId, status])
+}

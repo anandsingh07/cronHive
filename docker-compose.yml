@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cronhive
+      POSTGRES_PASSWORD: cronhive
+      POSTGRES_DB: cronhive
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cronhive -d cronhive"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=postgresql://cronhive:cronhive@postgres:5432/cronhive
+      - REDIS_URL=redis://redis:6379
+      - API_PORT=4000
+      - CRONHIVE_SIGNING_SECRET=${CRONHIVE_SIGNING_SECRET:-change_me_in_production}
+      - CRONHIVE_API_KEYS=${CRONHIVE_API_KEYS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://cronhive:cronhive@postgres:5432/cronhive
+      - REDIS_URL=redis://redis:6379
+      - CRONHIVE_SIGNING_SECRET=${CRONHIVE_SIGNING_SECRET:-change_me_in_production}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-5}
+      - WORKER_METRICS_PORT=9102
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: node dist/worker.js
+
+  scheduler:
+    build: .
+    restart: always
+    # Scale to multiple replicas safely: leader election ensures only one scans at a time.
+    # docker compose up --scale scheduler=3
+    environment:
+      - DATABASE_URL=postgresql://cronhive:cronhive@postgres:5432/cronhive
+      - REDIS_URL=redis://redis:6379
+      - SCHEDULER_LEADER_ELECTION=true
+      - SCHEDULER_METRICS_PORT=9101
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: node dist/scheduler.js
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - API_URL=http://api:4000
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://api:4000
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
